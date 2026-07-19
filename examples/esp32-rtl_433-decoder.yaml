@@ -59,7 +59,7 @@ rtl_433:
             message: !lambda |-
               return json::build_json([x](JsonObject root) {
                 root.set(x);
-              });
+              }).c_str();
             # You could also include other interesting information you may have from your RF receiver:
             # frequency: !lambda |-
             #   return id(mycc1101)._freq;
