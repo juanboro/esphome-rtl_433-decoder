@@ -29,16 +29,16 @@ bool RTL433Decoder::on_receive(remote_base::RemoteReceiveData data) {
 
 void RTL433Decoder::process(char *msg, void *ctx) {
   RTL433Decoder *objinst = (RTL433Decoder *) ctx;
-  std::string s=msg; 
-  free(msg); 
-  ESP_LOGD(RTAG, "Received msg: %s", s.c_str());
+  ESP_LOGD(RTAG, "Received msg: %s", msg);
 
-  json::parse_json(s, [objinst](JsonObject doc) {
+  json::parse_json((const uint8_t* ) msg, strlen(msg),[objinst](JsonObject doc) {
     for (auto *trigger : objinst->triggers_onjsonmsg_) {
       trigger->trigger(doc);
     }
     return true;
   });
+
+  free(msg); 
 
 }
 
