@@ -39,7 +39,7 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     
-    cg.add_library("https://github.com/juanboro/rtl_433_Decoder_ESP.git",None)
+    cg.add_library("rtl_433_Decoder_ESP",None,"https://github.com/juanboro/rtl_433_Decoder_ESP.git")
 
     if remote_base.CONF_RECEIVER_ID in config:
         await remote_base.register_listener(var, config)
