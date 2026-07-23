@@ -1,0 +1,142 @@
+substitutions:
+  cs:   "5"   # CC1101 pin 4 (green)
+  clk:  "18"  # CC1101 pin 5 (blue)
+  mosi: "23"  # CC1101 pin 6 (purple)
+  miso: "19"  # CC1101 pin 7 (grey)
+  rx:   "32"  # CC1101 pin 3 (brown)
+  tx:   "32"  # CC1101 pin 3 (brown)
+  tx_rx_shared: "true"
+  cc1101id: "mycc1101"  
+  cc1101name: "CC1101"
+
+spi:
+  # these are the default VSPI pins to use on ESP32
+  clk_pin: $clk    # CC1101 pin 5
+  mosi_pin: $mosi  # CC1101 pin 6
+  miso_pin: $miso  # CC1101 pin 7
+
+cc1101:
+  id: ${cc1101id}
+  cs_pin: 5 # CC1101 pin 4
+  frequency: ${init_frequency_mhz}MHz
+  gdo0_pin:
+    number: $rx  
+    allow_other_uses: true
+  on_packet:
+    then:
+      - sensor.template.publish:
+          id: ${cc1101id}_sensor_rx_rssi
+          state: !lambda 'return rssi;'
+
+remote_receiver:
+  - id: ${cc1101id}_rf_receiver
+    idle: 10ms
+    filter: 20us # Some RF sources have pretty high BW - adjust as needed
+    buffer_size: 2048 # This value is pretty large... default 10k is way too large
+    pin:
+      number: $rx
+      allow_other_uses: true
+      id: ${cc1101id}_gd0_recv
+      mode:
+        input: true
+        output: true
+        pullup: true
+        open_drain: true
+
+remote_transmitter:
+  - id: ${cc1101id}_rf_transmitter
+    pin:
+      number: $tx
+      allow_other_uses: ${tx_rx_shared}
+      id: ${cc1101id}_gd0_xmit
+      mode:
+        input: true
+        output: true
+        pullup: true
+        open_drain: true
+    eot_level: false
+    on_transmit:
+      then:
+        - cc1101.begin_tx:
+            id: ${cc1101id}
+    on_complete:
+        - cc1101.set_idle:
+            id: ${cc1101id}
+        - remote_transmitter.digital_write:
+            transmitter_id: ${cc1101id}_rf_transmitter
+            value: true
+        - cc1101.begin_rx:
+            id: ${cc1101id}
+    carrier_duty_percent: 100%
+
+globals:
+  - id: ${cc1101id}_registers
+    type: uint8_t[64]
+    restore_value: no
+    
+script:
+  - id: read_${cc1101id}_registers
+    then:
+      lambda: |-
+        id(${cc1101id}).enable();
+        id(${cc1101id}).write_byte(static_cast<uint8_t>(esphome::cc1101::BUS_READ | esphome::cc1101::BUS_BURST));
+        id(${cc1101id}).read_array(id(${cc1101id}_registers),64);
+        id(${cc1101id}).disable();
+
+interval:
+  - interval: 10s
+    then:
+      - script.execute: read_${cc1101id}_registers
+
+number:
+  - platform: template
+    id: ${cc1101id}_freq_num
+    name: "${cc1101name} frequency"
+    lambda: |-
+      uint32_t FREQ=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::FREQ2)] << 16;
+      FREQ|=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::FREQ1)] << 8;
+      FREQ|=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::FREQ0)];
+      // probably should also include the channel number offset in here
+      return roundf(1e-4*(static_cast<float>(FREQ) * esphome::cc1101::XTAL_FREQUENCY)/(1<<16))/100;
+    set_action: 
+      then:
+        - cc1101.set_frequency:
+            id: ${cc1101id}
+            value: !lambda return x*1e6;
+        - cc1101.set_channel:
+            id: ${cc1101id}
+            value: 0
+        - script.execute: read_${cc1101id}_registers
+        - lambda:
+            id(${cc1101id}_freq_num).publish_state(x);
+
+    min_value: 300.0
+    max_value: 928.0
+    step: 0.01
+    update_interval: 11s
+    unit_of_measurement: MHz
+
+sensor:
+  - platform: template
+    id: ${cc1101id}_sensor_rssi
+    name: "${cc1101name} RSSI"
+    lambda: |-
+      float rssi;
+      int8_t rawRSSI=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::RSSI)];
+      rssi = (((float)rawRSSI)/2.0f) - 74.0f;
+      return rssi;
+    update_interval: 11s
+    unit_of_measurement: dB
+
+  - platform: template
+    id: ${cc1101id}_sensor_rx_rssi
+    name: "${cc1101name} Last RX RSSI"
+    update_interval: never
+    unit_of_measurement: dB
+
+# it's a good idea to turn off the CC1101 receiver when doing OTA updates
+ota:
+  platform: esphome
+  on_begin:
+    - lambda: id(${cc1101id}).set_idle();
+

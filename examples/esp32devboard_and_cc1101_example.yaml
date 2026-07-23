@@ -1,7 +1,10 @@
 # You need to configure your esp32 board and radio - this example utilizes a TI-CC1101 connected to a
 # lowcost ESP32 dev board:
 packages: 
-  esp32-cc1101: github://juanboro/esphome-radiolib-cc1101/esp32-cc1101.yaml
+  # Built in version:
+  esp32-cc1101: !include { file: esp32-cc1101.yaml , vars: { init_frequency_mhz: 433.92 } }
+  # Radiolib version:
+  #esp32-cc1101: github://juanboro/esphome-radiolib-cc1101/esp32-cc1101.yaml
 
 ###############################################
 ## Site settings: Customize these as necessary

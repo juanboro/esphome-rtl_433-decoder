@@ -6,6 +6,11 @@ packages:
   #you need to setup ESPHome and your radio board settings - customize as needed
   esp32_board: !include esp32devboard_and_cc1101_example.yaml
 
+substitutions:
+  # Set these to zero if not available
+  getfreq: "id(mycc1101_freq_num).state"
+  getlastrxrssi: "id(mycc1101_sensor_rx_rssi).state"
+
 captive_portal:
 
 web_server:
@@ -18,7 +23,9 @@ api:
 mqtt:
   broker: !secret mqtt_host
   id: mqtt_client
-
+  discover_ip: false
+  discovery: false
+  
 ###############################################
 ## rtl_433 decoder example
 ###############################################
@@ -31,7 +38,7 @@ mqtt:
 # via the API (if HA is connected and listening)
 rtl_433:
   id: my_rtl433_id
-  receiver_id: rf_receiver
+  receiver_id: ${cc1101id}_rf_receiver
   on_json_message: 
     then:
       # MQTT publish similar to how rtl_433 would...
@@ -60,8 +67,8 @@ rtl_433:
               return json::build_json([x](JsonObject root) {
                 root.set(x);
               }).c_str();
-            # You could also include other interesting information you may have from your RF receiver:
-            # frequency: !lambda |-
-            #   return id(mycc1101)._freq;
-            # rssi: !lambda |-
-            #   return id(mycc1101).last_rx_rssi;
+            # You can also include other interesting information you may have from your RF receiver:
+            frequency: !lambda |-
+              return ${getfreq};
+            rssi: !lambda |-
+              return ${getlastrxrssi};
