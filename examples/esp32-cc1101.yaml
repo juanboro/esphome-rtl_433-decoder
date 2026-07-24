@@ -19,14 +19,6 @@ cc1101:
   id: ${cc1101id}
   cs_pin: 5 # CC1101 pin 4
   frequency: ${init_frequency_mhz}MHz
-  gdo0_pin:
-    number: $rx  
-    allow_other_uses: true
-  on_packet:
-    then:
-      - sensor.template.publish:
-          id: ${cc1101id}_sensor_rx_rssi
-          state: !lambda 'return rssi;'
 
 remote_receiver:
   - id: ${cc1101id}_rf_receiver
@@ -74,19 +66,69 @@ globals:
     type: uint8_t[64]
     restore_value: no
     
+esphome:
+  on_boot:
+    - priority: 801.0
+      then:
+        - lambda: |-
+            // If ESP 32 remote is enabled - then we should safely be able to ISR monitor the gdo0 pin...
+            #ifdef USE_ESP32
+            #include <soc/soc_caps.h>
+            #if SOC_RMT_SUPPORTED
+            id(rxsensor)->set_use_interrupt(true);
+            #endif
+            #endif
+
+binary_sensor:
+  - platform: gpio
+    id: rxsensor
+    pin:
+      number: $rx
+      allow_other_uses: true
+      mode:
+        input: true
+        output: true
+        pullup: true
+        open_drain: true
+    filters:
+      settle: 150ms
+    on_press:
+      - lambda: |-
+          id(read_${cc1101id}_registers)->execute(static_cast<int>(esphome::cc1101::Register::RSSI),static_cast<int>(esphome::cc1101::Register::RSSI));
+          id(${cc1101id}_sensor_rx_rssi)->update();
+
 script:
   - id: read_${cc1101id}_registers
+    parameters:
+      begin_register: int
+      end_register: int
+
     then:
       lambda: |-
+        if (begin_register > end_register) {
+          return;
+        }
+
+        int count = end_register - begin_register + 1;
+        if (count <= 0) {
+          return;
+        }
+
         id(${cc1101id}).enable();
-        id(${cc1101id}).write_byte(static_cast<uint8_t>(esphome::cc1101::BUS_READ | esphome::cc1101::BUS_BURST));
-        id(${cc1101id}).read_array(id(${cc1101id}_registers),64);
+        id(${cc1101id}).write_byte(begin_register | static_cast<uint8_t>(esphome::cc1101::BUS_READ | esphome::cc1101::BUS_BURST));
+        id(${cc1101id}).read_array(&id(${cc1101id}_registers)[begin_register], count);
         id(${cc1101id}).disable();
+  - id: read_all_${cc1101id}_registers
+    then:
+      script.execute:
+        id: read_${cc1101id}_registers
+        begin_register: 0
+        end_register: 63
 
 interval:
   - interval: 10s
     then:
-      - script.execute: read_${cc1101id}_registers
+      - script.execute: read_all_${cc1101id}_registers
 
 number:
   - platform: template
@@ -106,7 +148,7 @@ number:
         - cc1101.set_channel:
             id: ${cc1101id}
             value: 0
-        - script.execute: read_${cc1101id}_registers
+        - script.execute: read_all_${cc1101id}_registers
         - lambda:
             id(${cc1101id}_freq_num).publish_state(x);
 
@@ -131,6 +173,11 @@ sensor:
   - platform: template
     id: ${cc1101id}_sensor_rx_rssi
     name: "${cc1101name} Last RX RSSI"
+    lambda: |-
+      float rssi;
+      int8_t rawRSSI=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::RSSI)];
+      rssi = (((float)rawRSSI)/2.0f) - 74.0f;
+      return rssi;
     update_interval: never
     unit_of_measurement: dB
 
