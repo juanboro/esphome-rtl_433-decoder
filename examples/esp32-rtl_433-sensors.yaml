@@ -38,7 +38,7 @@ rtl_433:
             if (x["event"]=="Button Press") {
               id(govee_4759_button).publish_state(true);
             } else if (x["battery_ok"]) {
-              id(govee_4759_bat).publish_state(x["battery_ok"].as<float>());
+              id(govee_4759_bat).publish_state(x["battery_ok"].as<float>()*100);
             }
           } else if ((x["model"]=="LaCrosse-TX141THBv2")&&(x["id"].as<int>()==188)) {
             id(lacross_temp_sensor).publish_state(x["temperature_C"].as<float>());
