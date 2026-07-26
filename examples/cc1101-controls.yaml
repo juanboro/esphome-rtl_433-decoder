@@ -1,7 +1,7 @@
 
 globals:
-  - id: ${cc1101id}_registers
-    type: uint8_t[64]
+  - id: ${cc1101id}_state
+    type: esphome::cc1101::CC1101State
     restore_value: no
     
 esphome:
@@ -54,7 +54,7 @@ script:
 
         id(${cc1101id}).enable();
         id(${cc1101id}).write_byte(begin_register | static_cast<uint8_t>(esphome::cc1101::BUS_READ | esphome::cc1101::BUS_BURST));
-        id(${cc1101id}).read_array(&id(${cc1101id}_registers)[begin_register], count);
+        id(${cc1101id}).read_array(&id(${cc1101id}_state).regs()[begin_register], count);
         id(${cc1101id}).disable();
   - id: read_all_${cc1101id}_registers
     then:
@@ -73,22 +73,21 @@ number:
     id: ${cc1101id}_freq_num
     name: "${cc1101name} frequency"
     lambda: |-
-      uint32_t FREQ=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::FREQ2)] << 16;
-      FREQ|=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::FREQ1)] << 8;
-      FREQ|=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::FREQ0)];
+      uint32_t FREQ=id(${cc1101id}_state).FREQ2 << 16;
+      FREQ|=id(${cc1101id}_state).FREQ1 << 8;
+      FREQ|=id(${cc1101id}_state).FREQ0;
       // probably should also include the channel number offset in here
       return roundf(1e-4*(static_cast<float>(FREQ) * esphome::cc1101::XTAL_FREQUENCY)/(1<<16))/100;
     set_action: 
       then:
-        - cc1101.set_frequency:
-            id: ${cc1101id}
-            value: !lambda return x*1e6;
+        - cc1101.set_frequency: 
+           id: ${cc1101id}
+           value: !lambda return x*1e6;
         - cc1101.set_channel:
             id: ${cc1101id}
             value: 0
         - script.execute: read_all_${cc1101id}_registers
-        - lambda:
-            id(${cc1101id}_freq_num).publish_state(x);
+        - lambda: id(${cc1101id}_freq_num).update();
 
     min_value: 300.0
     max_value: 928.0
@@ -96,13 +95,279 @@ number:
     update_interval: 11s
     unit_of_measurement: MHz
 
+  - platform: template
+    id: ${cc1101id}_br_num
+    name: "${cc1101name} bitrate"
+    lambda: |-      
+      uint8_t drate_m = id(${cc1101id}_state).MDMCFG3;
+      uint8_t drate_e = id(${cc1101id}_state).MDMCFG4 & 0x0f;
+
+      float rate = ( (256.0f + drate_m) * (1u << drate_e) * esphome::cc1101::XTAL_FREQUENCY ) / (1u << 28);
+      rate/=1000;
+      return std::round(rate / 0.025) * 0.025;
+
+    set_action: 
+      then:
+        - lambda: |-
+            id($cc1101id).set_symbol_rate(x*1000);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_br_num).update();
+    min_value: 0.025
+    max_value: 600
+    step: 0.025
+    unit_of_measurement: kbps
+
+  - platform: template
+    id: ${cc1101id}_bw_num
+    name: "${cc1101name} filter bandwidth"
+    lambda: |-
+        // Extract the configuration fields from the register
+        // Bits 5:4 are CHANBW_M (Row selector in Table 26)
+        // Bits 7:6 are CHANBW_E (Column selector in Table 26)
+        uint8_t chanbw_m = (id(${cc1101id}_state).MDMCFG4 >> 4) & 0x03;
+        uint8_t chanbw_e = (id(${cc1101id}_state).MDMCFG4 >> 6) & 0x03;
+
+        uint8_t table_index = (chanbw_m * 4) + chanbw_e;
+
+        static const float bandwidths_26MHz[] = {
+          812.0f, 406.0f, 203.0f, 102.0f,
+          650.0f, 325.0f, 162.0f, 81.0f,
+          541.0f, 270.0f, 135.0f, 68.0f,
+          464.0f, 232.0f, 116.0f, 58.0f
+        };
+    
+        return bandwidths_26MHz[table_index] * (esphome::cc1101::XTAL_FREQUENCY / 26.0e6f);
+    set_action: 
+      then:
+        - lambda: id($cc1101id).set_filter_bandwidth(x*1000);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_bw_num).update();
+    min_value: 58.0
+    max_value: 818.0
+    step: 10
+    unit_of_measurement: kHz
+
+  - platform: template
+    id: ${cc1101id}_fsk_deviation
+    name: "${cc1101name} FSK deviation"
+    lambda: |-      
+      float deviation = ( (8.0f + id(${cc1101id}_state).DEVIATION_M) * (1u << id(${cc1101id}_state).DEVIATION_E) * esphome::cc1101::XTAL_FREQUENCY ) / (1u << 17);
+      deviation/=1000;
+      return std::round(deviation / 0.025) * 0.025;
+
+    set_action: 
+      then:
+        - lambda: |-
+            id($cc1101id).set_fsk_deviation(x*1000);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_fsk_deviation).update();
+    min_value: 1.5
+    max_value: 381
+    step: 0.025
+    unit_of_measurement: kHz
+
+  - platform: template
+    id: ${cc1101id}_msk_deviation
+    name: "${cc1101name} MSK deviation"
+    lambda: return id(${cc1101id}_state).DEVIATION_M-1;
+    set_action: 
+      then:
+        - lambda: |-
+            id($cc1101id).set_msk_deviation(x);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_msk_deviation).update();
+    min_value: 1
+    max_value: 8
+    step: 1
+
+  - platform: template
+    id: ${cc1101id}_channel
+    name: "${cc1101name} channel"
+    lambda: return id(${cc1101id}_state).CHANNR;
+    set_action: 
+      then:
+        - lambda: |-
+            id($cc1101id).set_channel(x);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_channel).update();
+    min_value: 0
+    max_value: 255
+    step: 1
+
+  - platform: template
+    id: ${cc1101id}_channel_spacing
+    name: "${cc1101name} Channel spacing"
+    lambda: |-      
+      float space = ( (256.0f + id(${cc1101id}_state).CHANSPC_M) * (1u << id(${cc1101id}_state).CHANSPC_E) * esphome::cc1101::XTAL_FREQUENCY ) / (1u << 18);
+      space/=1000;
+      return std::round(space / 0.025) * 0.025;
+    set_action: 
+      then:
+        - lambda: |-
+            id($cc1101id).set_channel_spacing(x*1000);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_channel_spacing).update();
+    min_value: 25
+    max_value: 405
+    step: 0.025
+    unit_of_measurement: kHz
+
+  - platform: template
+    id: ${cc1101id}_if_frequency
+    name: "${cc1101name} IF frequency"
+    lambda: |-      
+      float iffreq = ( id(${cc1101id}_state).FREQ_IF * esphome::cc1101::XTAL_FREQUENCY ) / (1u << 10);
+      iffreq/=1000;
+      return std::round(iffreq / 0.025) * 0.025;
+    set_action: 
+      then:
+        - lambda: |-
+            id($cc1101id).set_if_frequency(x*1000);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_if_frequency).update();
+    min_value: 25
+    max_value: 788
+    step: 0.025
+    unit_of_measurement: kHz
+
+select:
+  - platform: template
+    id: ${cc1101id}_modulation
+    name: "${cc1101name} modulation"
+    options:
+      - "OOK (default)"
+      - "2-FSK"
+      - "4-FSK"
+      - "GFSK"
+      - "MSK"
+    lambda: |-
+      esphome::cc1101::Modulation m=static_cast<esphome::cc1101::Modulation>(id(${cc1101id}_state).MOD_FORMAT);
+      return id(${cc1101id}_modulation).at((m == esphome::cc1101::Modulation::MODULATION_ASK_OOK) ? 0 :
+                                           (m == esphome::cc1101::Modulation::MODULATION_2_FSK)   ? 1 :
+                                           (m == esphome::cc1101::Modulation::MODULATION_4_FSK)   ? 2 :
+                                           (m == esphome::cc1101::Modulation::MODULATION_GFSK)    ? 3 :
+                                                                                                    4);
+
+    set_action: 
+      then:
+          - lambda: |-
+              uint8_t idx=id(${cc1101id}_modulation).index_of(x).value();
+              id($cc1101id).set_modulation_type((idx == 0) ? esphome::cc1101::Modulation::MODULATION_ASK_OOK :
+                                                (idx == 1) ? esphome::cc1101::Modulation::MODULATION_2_FSK :
+                                                (idx == 2) ? esphome::cc1101::Modulation::MODULATION_4_FSK :
+                                                (idx == 3) ? esphome::cc1101::Modulation::MODULATION_GFSK :
+                                                             esphome::cc1101::Modulation::MODULATION_MSK);
+          - script.execute: read_all_${cc1101id}_registers
+          - lambda: id(${cc1101id}_modulation).update();
+  - platform: template
+    id: ${cc1101id}_rx_attenuation
+    name: "${cc1101name} RX attenuation"
+    options:
+      - "0dB (default)"
+      - "6dB"
+      - "12dB"
+      - "18dB"
+    lambda: |-
+      return id(${cc1101id}_rx_attenuation).at(id(${cc1101id}_state).CLOSE_IN_RX);
+    set_action: 
+      then:
+          - lambda: id($cc1101id).set_rx_attenuation(static_cast<esphome::cc1101::RxAttenuation>(id(${cc1101id}_rx_attenuation).index_of(x).value()));
+          - script.execute: read_all_${cc1101id}_registers
+          - lambda: id(${cc1101id}_rx_attenuation).update();
+
+  - platform: template
+    id: ${cc1101id}_magn_target
+    name: "${cc1101name} MAGN target"
+    options:
+      - "24dB"
+      - "27dB"
+      - "30dB"
+      - "33dB (default)"
+      - "36dB"
+      - "38dB"
+      - "40dB"
+      - "42dB"
+
+    lambda: |-
+      return id(${cc1101id}_magn_target).at(id(${cc1101id}_state).MAGN_TARGET);
+    set_action: 
+      then:
+          - lambda: id($cc1101id).set_magn_target(static_cast<esphome::cc1101::MagnTarget>(id(${cc1101id}_magn_target).index_of(x).value()));
+          - script.execute: read_all_${cc1101id}_registers
+          - lambda: id(${cc1101id}_magn_target).update();
+
+  - platform: template
+    id: ${cc1101id}_max_lna_gain
+    name: "${cc1101name} Max LNA gain"
+    options:
+      - "Max (default)"
+      - "Max-2dB"
+      - "Max-6.1dB"
+      - "Max-7.4dB"
+      - "Max-9.2dB"
+      - "Max-11.5dB"
+      - "Max-14.6dB"
+      - "Max-17.1dB"
+
+    lambda: |-
+      return id(${cc1101id}_max_lna_gain).at(id(${cc1101id}_state).MAX_LNA_GAIN);
+    set_action: 
+      then:
+          - lambda: id($cc1101id).set_max_lna_gain(static_cast<esphome::cc1101::MaxLnaGain>(id(${cc1101id}_max_lna_gain).index_of(x).value()));
+          - script.execute: read_all_${cc1101id}_registers
+          - lambda: id(${cc1101id}_max_lna_gain).update();
+
+  - platform: template
+    id: ${cc1101id}_max_dvga_gain
+    name: "${cc1101name} Max DVGA gain"
+    options:
+      - "All gain settings (default)"
+      - "Disallow highest gain setting"
+      - "Disallow 2 highest gain settings"
+      - "Disallow 3 highest gain settings"
+
+    lambda: |-
+      return id(${cc1101id}_max_dvga_gain).at(id(${cc1101id}_state).MAX_DVGA_GAIN);
+    set_action: 
+      then:
+          - lambda: id($cc1101id).set_max_dvga_gain(static_cast<esphome::cc1101::MaxDvgaGain>(id(${cc1101id}_max_dvga_gain).index_of(x).value()));
+          - script.execute: read_all_${cc1101id}_registers
+          - lambda: id(${cc1101id}_max_dvga_gain).update();
+
+switch:
+  - platform: template
+    id: ${cc1101id}_dc_blocking_filter
+    name: "${cc1101name} DC blocking filter"
+    lambda: |-
+      return id(${cc1101id}_state).DEM_DCFILT_OFF ? false : true;
+    turn_on_action:
+      - lambda: id($cc1101id).set_dc_blocking_filter(true);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_dc_blocking_filter).publish_state(true);
+    turn_off_action:
+      - lambda: id($cc1101id).set_dc_blocking_filter(false);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_dc_blocking_filter).publish_state(false);
+  - platform: template
+    id: ${cc1101id}_manchester
+    name: "${cc1101name} Manchester Encoding"
+    lambda: return static_cast<bool>(id(${cc1101id}_state).MANCHESTER_EN);
+    turn_on_action:
+      - lambda: id($cc1101id).set_manchester(true);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_manchester).publish_state(true);
+    turn_off_action:
+      - lambda: id($cc1101id).set_manchester(false);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_manchester).publish_state(false);
+
 sensor:
   - platform: template
     id: ${cc1101id}_sensor_rssi
     name: "${cc1101name} RSSI"
     lambda: |-
       float rssi;
-      int8_t rawRSSI=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::RSSI)];
+      int8_t rawRSSI=id(${cc1101id}_state).RSSI;
       rssi = (((float)rawRSSI)/2.0f) - 74.0f;
       return rssi;
     update_interval: 11s
@@ -113,22 +378,27 @@ sensor:
     name: "${cc1101name} Last RX RSSI"
     lambda: |-
       float rssi;
-      int8_t rawRSSI=id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::RSSI)];
+      int8_t rawRSSI=id(${cc1101id}_state).RSSI;
       rssi = (((float)rawRSSI)/2.0f) - 74.0f;
       return rssi;
     update_interval: never
     unit_of_measurement: dB
 
+# for debug...
 text_sensor:
   - platform: template
     id: ${cc1101id}_sensor_reg_agcctrl2
     name: "${cc1101name} _REG_AGCCTRL2"
-    lambda: return str_sprintf("0x%x",id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::AGCCTRL2)]);
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).AGCCTRL2);
   - platform: template
     id: ${cc1101id}_sensor_reg_agcctrl1
     name: "${cc1101name} _REG_AGCCTRL1"
-    lambda: return str_sprintf("0x%x",id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::AGCCTRL1)]);
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).AGCCTRL1);
   - platform: template
     id: ${cc1101id}_sensor_reg_agcctrl0
     name: "${cc1101name} _REG_AGCCTRL0"
-    lambda: return str_sprintf("0x%x",id(${cc1101id}_registers)[static_cast<uint8_t>(esphome::cc1101::Register::AGCCTRL0)]);
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).AGCCTRL0);
+  - platform: template
+    id: ${cc1101id}_sensor_reg_MDMCFG2
+    name: "${cc1101name} _REG_MDMCFG2"
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).MDMCFG2);
