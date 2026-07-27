@@ -16,6 +16,12 @@ esphome:
             id(rxsensor)->set_use_interrupt(true);
             #endif
             #endif
+    - priority: -101.0
+      then:
+        - remote_transmitter.digital_write:
+            # make sure that we are not pulling down
+            transmitter_id: ${cc1101id}_rf_transmitter
+            value: true
 
 binary_sensor:
   - platform: gpio
@@ -43,7 +49,7 @@ script:
 
     then:
       lambda: |-
-        if (begin_register > end_register) {
+        if ((!${cc1101id}->is_ready())||(begin_register > end_register)) {
           return;
         }
 
@@ -62,6 +68,30 @@ script:
         id: read_${cc1101id}_registers
         begin_register: 0
         end_register: 63
+  - id: write_${cc1101id}_register
+    parameters:
+      write_register: int
+      value: int
+
+    then:
+      lambda: |-
+        if ((!${cc1101id}->is_ready())||(value<0)||(value>255)) {
+          return;
+        }
+
+        id(${cc1101id}).enable();
+        id(${cc1101id}).write_byte(write_register | static_cast<uint8_t>(esphome::cc1101::BUS_WRITE | esphome::cc1101::BUS_BURST));
+        id(${cc1101id}).write_byte(static_cast<uint8_t>(value));
+        id(${cc1101id}).disable();
+
+  - id: set_${cc1101id}_freq_offset
+    parameters:
+      offset: float
+    then:
+      - script.execute:
+          id: write_${cc1101id}_register
+          write_register: !lambda return static_cast<int>(esphome::cc1101::Register::FSCTRL0);
+          value: !lambda return static_cast<uint8_t>(static_cast<int>((offset)/(esphome::cc1101::XTAL_FREQUENCY/(1<<14))));
 
 interval:
   - interval: 10s
@@ -108,8 +138,7 @@ number:
 
     set_action: 
       then:
-        - lambda: |-
-            id($cc1101id).set_symbol_rate(x*1000);
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_symbol_rate(x*1000);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_br_num).update();
     min_value: 0.025
@@ -139,7 +168,7 @@ number:
         return bandwidths_26MHz[table_index] * (esphome::cc1101::XTAL_FREQUENCY / 26.0e6f);
     set_action: 
       then:
-        - lambda: id($cc1101id).set_filter_bandwidth(x*1000);
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_filter_bandwidth(x*1000);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_bw_num).update();
     min_value: 58.0
@@ -157,8 +186,7 @@ number:
 
     set_action: 
       then:
-        - lambda: |-
-            id($cc1101id).set_fsk_deviation(x*1000);
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_fsk_deviation(x*1000);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_fsk_deviation).update();
     min_value: 1.5
@@ -172,8 +200,7 @@ number:
     lambda: return id(${cc1101id}_state).DEVIATION_M-1;
     set_action: 
       then:
-        - lambda: |-
-            id($cc1101id).set_msk_deviation(x);
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_msk_deviation(x);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_msk_deviation).update();
     min_value: 1
@@ -186,8 +213,7 @@ number:
     lambda: return id(${cc1101id}_state).CHANNR;
     set_action: 
       then:
-        - lambda: |-
-            id($cc1101id).set_channel(x);
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_channel(x);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_channel).update();
     min_value: 0
@@ -203,8 +229,7 @@ number:
       return std::round(space / 0.025) * 0.025;
     set_action: 
       then:
-        - lambda: |-
-            id($cc1101id).set_channel_spacing(x*1000);
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_channel_spacing(x*1000);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_channel_spacing).update();
     min_value: 25
@@ -221,8 +246,7 @@ number:
       return std::round(iffreq / 0.025) * 0.025;
     set_action: 
       then:
-        - lambda: |-
-            id($cc1101id).set_if_frequency(x*1000);
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_if_frequency(x*1000);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_if_frequency).update();
     min_value: 25
@@ -230,7 +254,115 @@ number:
     step: 0.025
     unit_of_measurement: kHz
 
+  - platform: template
+    id: ${cc1101id}_packet_length
+    name: "${cc1101name} Packet length"
+    lambda: |-
+      return id(${cc1101id}_state).LENGTH_CONFIG == static_cast<uint8_t>(esphome::cc1101::LengthConfig::LENGTH_CONFIG_FIXED)
+          ? id(${cc1101id}_state).PKTLEN
+          : 0;
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_packet_length(x);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_packet_length).update();
+    min_value: 0
+    max_value: 64
+    step: 1
+
+  - platform: template
+    id: ${cc1101id}_sync0
+    name: "${cc1101name} Sync word low byte"
+    lambda: return id(${cc1101id}_state).SYNC0;
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_sync0(x);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_sync0).update();
+    min_value: 0
+    max_value: 255
+    step: 1
+
+  - platform: template
+    id: ${cc1101id}_sync1
+    name: "${cc1101name} Sync word high byte"
+    lambda: return id(${cc1101id}_state).SYNC1;
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_sync1(x);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_sync1).update();
+    min_value: 0
+    max_value: 255
+    step: 1
+
+  - platform: template
+    id: ${cc1101id}_num_preamble
+    name: "${cc1101name} Preamble length"
+    lambda: return static_cast<uint8_t>(id(${cc1101id}_state).NUM_PREAMBLE);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_num_preamble(x);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_num_preamble).update();
+    min_value: 0
+    max_value: 7
+    step: 1
+
+  - platform: template
+    id: ${cc1101id}_carrier_sense_abs_thr
+    name: "${cc1101name} Carrier sense absolute threshold"
+    lambda: |-
+      int8_t thr = static_cast<int8_t>(id(${cc1101id}_state).CARRIER_SENSE_ABS_THR);
+      if (thr & 0x08) {
+        thr -= 16;
+      }
+      return thr;
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_carrier_sense_abs_thr(x);
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_carrier_sense_abs_thr).update();
+    min_value: -8
+    max_value: 7
+    step: 1
+
+  - platform: template
+    id: ${cc1101id}_freqoff
+    name: "${cc1101name} Frequency Synthesizer offset"
+    lambda: |-
+      int8_t freqoff = static_cast<int8_t>(id(${cc1101id}_state).FSCTRL0);
+      return (freqoff * esphome::cc1101::XTAL_FREQUENCY/(1<<14))/1000;
+    set_action:
+      then:
+        - script.execute:
+            id: write_${cc1101id}_register
+            write_register: !lambda return static_cast<int>(esphome::cc1101::Register::FSCTRL0);
+            value: !lambda return static_cast<uint8_t>(static_cast<int>((x*1000)/(esphome::cc1101::XTAL_FREQUENCY/(1<<14))));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_freqoff).update();
+    min_value: -202
+    max_value: 202
+    step: 1.59
+    unit_of_measurement: kHz
+
 select:
+  - platform: template
+    id: ${cc1101id}_sync_mode
+    name: "${cc1101name} Sync mode"
+    options:
+      - "None"
+      - "15/16"
+      - "16/16"
+      - "30/32"
+    lambda: |-
+      return id(${cc1101id}_sync_mode).at(id(${cc1101id}_state).SYNC_MODE);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_sync_mode(static_cast<esphome::cc1101::SyncMode>(id(${cc1101id}_sync_mode).index_of(x).value()));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_sync_mode).update();
+
   - platform: template
     id: ${cc1101id}_modulation
     name: "${cc1101name} modulation"
@@ -251,12 +383,14 @@ select:
     set_action: 
       then:
           - lambda: |-
-              uint8_t idx=id(${cc1101id}_modulation).index_of(x).value();
-              id($cc1101id).set_modulation_type((idx == 0) ? esphome::cc1101::Modulation::MODULATION_ASK_OOK :
-                                                (idx == 1) ? esphome::cc1101::Modulation::MODULATION_2_FSK :
-                                                (idx == 2) ? esphome::cc1101::Modulation::MODULATION_4_FSK :
-                                                (idx == 3) ? esphome::cc1101::Modulation::MODULATION_GFSK :
-                                                             esphome::cc1101::Modulation::MODULATION_MSK);
+              if (${cc1101id}->is_ready()) {
+                uint8_t idx=id(${cc1101id}_modulation).index_of(x).value();
+                id($cc1101id).set_modulation_type((idx == 0) ? esphome::cc1101::Modulation::MODULATION_ASK_OOK :
+                                                  (idx == 1) ? esphome::cc1101::Modulation::MODULATION_2_FSK :
+                                                  (idx == 2) ? esphome::cc1101::Modulation::MODULATION_4_FSK :
+                                                  (idx == 3) ? esphome::cc1101::Modulation::MODULATION_GFSK :
+                                                               esphome::cc1101::Modulation::MODULATION_MSK);
+              }
           - script.execute: read_all_${cc1101id}_registers
           - lambda: id(${cc1101id}_modulation).update();
   - platform: template
@@ -271,7 +405,7 @@ select:
       return id(${cc1101id}_rx_attenuation).at(id(${cc1101id}_state).CLOSE_IN_RX);
     set_action: 
       then:
-          - lambda: id($cc1101id).set_rx_attenuation(static_cast<esphome::cc1101::RxAttenuation>(id(${cc1101id}_rx_attenuation).index_of(x).value()));
+          - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_rx_attenuation(static_cast<esphome::cc1101::RxAttenuation>(id(${cc1101id}_rx_attenuation).index_of(x).value()));
           - script.execute: read_all_${cc1101id}_registers
           - lambda: id(${cc1101id}_rx_attenuation).update();
 
@@ -292,7 +426,7 @@ select:
       return id(${cc1101id}_magn_target).at(id(${cc1101id}_state).MAGN_TARGET);
     set_action: 
       then:
-          - lambda: id($cc1101id).set_magn_target(static_cast<esphome::cc1101::MagnTarget>(id(${cc1101id}_magn_target).index_of(x).value()));
+          - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_magn_target(static_cast<esphome::cc1101::MagnTarget>(id(${cc1101id}_magn_target).index_of(x).value()));
           - script.execute: read_all_${cc1101id}_registers
           - lambda: id(${cc1101id}_magn_target).update();
 
@@ -313,7 +447,7 @@ select:
       return id(${cc1101id}_max_lna_gain).at(id(${cc1101id}_state).MAX_LNA_GAIN);
     set_action: 
       then:
-          - lambda: id($cc1101id).set_max_lna_gain(static_cast<esphome::cc1101::MaxLnaGain>(id(${cc1101id}_max_lna_gain).index_of(x).value()));
+          - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_max_lna_gain(static_cast<esphome::cc1101::MaxLnaGain>(id(${cc1101id}_max_lna_gain).index_of(x).value()));
           - script.execute: read_all_${cc1101id}_registers
           - lambda: id(${cc1101id}_max_lna_gain).update();
 
@@ -330,34 +464,197 @@ select:
       return id(${cc1101id}_max_dvga_gain).at(id(${cc1101id}_state).MAX_DVGA_GAIN);
     set_action: 
       then:
-          - lambda: id($cc1101id).set_max_dvga_gain(static_cast<esphome::cc1101::MaxDvgaGain>(id(${cc1101id}_max_dvga_gain).index_of(x).value()));
+          - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_max_dvga_gain(static_cast<esphome::cc1101::MaxDvgaGain>(id(${cc1101id}_max_dvga_gain).index_of(x).value()));
           - script.execute: read_all_${cc1101id}_registers
           - lambda: id(${cc1101id}_max_dvga_gain).update();
 
+
+  - platform: template
+    id: ${cc1101id}_carrier_sense_rel_thr
+    name: "${cc1101name} Carrier sense relative threshold"
+    options:
+      - "Default"
+      - "+6dB"
+      - "+10dB"
+      - "+14dB"
+    lambda: |-
+      return id(${cc1101id}_carrier_sense_rel_thr).at(id(${cc1101id}_state).CARRIER_SENSE_REL_THR);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_carrier_sense_rel_thr(static_cast<esphome::cc1101::CarrierSenseRelThr>(id(${cc1101id}_carrier_sense_rel_thr).index_of(x).value()));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_carrier_sense_rel_thr).update();
+
+  - platform: template
+    id: ${cc1101id}_filter_length_fsk_msk
+    name: "${cc1101name} Filter length FSK⁄MSK"
+    options:
+      - "8"
+      - "16 (default)"
+      - "32"
+      - "64"
+    lambda: |-
+      return id(${cc1101id}_filter_length_fsk_msk).at(id(${cc1101id}_state).FILTER_LENGTH);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_filter_length_fsk_msk(static_cast<esphome::cc1101::FilterLengthFskMsk>(id(${cc1101id}_filter_length_fsk_msk).index_of(x).value()));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_filter_length_fsk_msk).update();
+
+  - platform: template
+    id: ${cc1101id}_filter_length_ask_ook
+    name: "${cc1101name} Filter length ASK⁄OOK"
+    options:
+      - "4dB"
+      - "8dB (default)"
+      - "12dB"
+      - "16dB"
+    lambda: |-
+      return id(${cc1101id}_filter_length_ask_ook).at(id(${cc1101id}_state).FILTER_LENGTH);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_filter_length_ask_ook(static_cast<esphome::cc1101::FilterLengthAskOok>(id(${cc1101id}_filter_length_ask_ook).index_of(x).value()));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_filter_length_ask_ook).update();
+
+  - platform: template
+    id: ${cc1101id}_freeze
+    name: "${cc1101name} AGC freeze"
+    options:
+      - "Default"
+      - "On Sync"
+      - "Analog Only"
+      - "Analog And Digital"
+    lambda: |-
+      return id(${cc1101id}_freeze).at(id(${cc1101id}_state).AGC_FREEZE);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_freeze(static_cast<esphome::cc1101::Freeze>(id(${cc1101id}_freeze).index_of(x).value()));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_freeze).update();
+
+  - platform: template
+    id: ${cc1101id}_wait_time
+    name: "${cc1101name} AGC wait time"
+    options:
+      - "8"
+      - "16"
+      - "24"
+      - "32"
+    lambda: |-
+      return id(${cc1101id}_wait_time).at(id(${cc1101id}_state).WAIT_TIME);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_wait_time(static_cast<esphome::cc1101::WaitTime>(id(${cc1101id}_wait_time).index_of(x).value()));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_wait_time).update();
+
+  - platform: template
+    id: ${cc1101id}_hyst_level
+    name: "${cc1101name} AGC hysteresis level"
+    options:
+      - "None"
+      - "Low"
+      - "Medium"
+      - "High"
+    lambda: |-
+      return id(${cc1101id}_hyst_level).at(id(${cc1101id}_state).HYST_LEVEL);
+    set_action:
+      then:
+        - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_hyst_level(static_cast<esphome::cc1101::HystLevel>(id(${cc1101id}_hyst_level).index_of(x).value()));
+        - script.execute: read_all_${cc1101id}_registers
+        - lambda: id(${cc1101id}_hyst_level).update();
+
 switch:
+  - platform: template
+    id: ${cc1101id}_packet_mode
+    name: "${cc1101name} Packet mode"
+    lambda: return id(${cc1101id}_state).PKT_FORMAT == static_cast<uint8_t>(esphome::cc1101::PacketFormat::PACKET_FORMAT_FIFO);
+    turn_on_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_packet_mode(true);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_packet_mode).publish_state(true);
+    turn_off_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_packet_mode(false);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_packet_mode).publish_state(false);
+
+  - platform: template
+    id: ${cc1101id}_crc_enable
+    name: "${cc1101name} CRC enable"
+    lambda: return static_cast<bool>(id(${cc1101id}_state).CRC_EN);
+    turn_on_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_crc_enable(true);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_crc_enable).publish_state(true);
+    turn_off_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_crc_enable(false);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_crc_enable).publish_state(false);
+
+  - platform: template
+    id: ${cc1101id}_whitening
+    name: "${cc1101name} Whitening"
+    lambda: return static_cast<bool>(id(${cc1101id}_state).WHITE_DATA);
+    turn_on_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_whitening(true);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_whitening).publish_state(true);
+    turn_off_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_whitening(false);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_whitening).publish_state(false);
+
+  - platform: template
+    id: ${cc1101id}_lna_priority
+    name: "${cc1101name} AGC LNA priority"
+    lambda: return static_cast<bool>(id(${cc1101id}_state).AGC_LNA_PRIORITY);
+    turn_on_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_lna_priority(true);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_lna_priority).publish_state(true);
+    turn_off_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_lna_priority(false);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_lna_priority).publish_state(false);
+
+  - platform: template
+    id: ${cc1101id}_carrier_sense_above_threshold
+    name: "${cc1101name} Carrier sense above threshold"
+    lambda: return static_cast<bool>(id(${cc1101id}_state).CARRIER_SENSE_ABOVE_THRESHOLD);
+    turn_on_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_carrier_sense_above_threshold(true);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_carrier_sense_above_threshold).publish_state(true);
+    turn_off_action:
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_carrier_sense_above_threshold(false);
+      - script.execute: read_all_${cc1101id}_registers
+      - lambda: id(${cc1101id}_carrier_sense_above_threshold).publish_state(false);
+
   - platform: template
     id: ${cc1101id}_dc_blocking_filter
     name: "${cc1101name} DC blocking filter"
     lambda: |-
       return id(${cc1101id}_state).DEM_DCFILT_OFF ? false : true;
     turn_on_action:
-      - lambda: id($cc1101id).set_dc_blocking_filter(true);
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_dc_blocking_filter(true);
       - script.execute: read_all_${cc1101id}_registers
       - lambda: id(${cc1101id}_dc_blocking_filter).publish_state(true);
     turn_off_action:
-      - lambda: id($cc1101id).set_dc_blocking_filter(false);
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_dc_blocking_filter(false);
       - script.execute: read_all_${cc1101id}_registers
       - lambda: id(${cc1101id}_dc_blocking_filter).publish_state(false);
+
   - platform: template
     id: ${cc1101id}_manchester
     name: "${cc1101name} Manchester Encoding"
     lambda: return static_cast<bool>(id(${cc1101id}_state).MANCHESTER_EN);
     turn_on_action:
-      - lambda: id($cc1101id).set_manchester(true);
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_manchester(true);
       - script.execute: read_all_${cc1101id}_registers
       - lambda: id(${cc1101id}_manchester).publish_state(true);
     turn_off_action:
-      - lambda: id($cc1101id).set_manchester(false);
+      - lambda: if (${cc1101id}->is_ready()) id($cc1101id).set_manchester(false);
       - script.execute: read_all_${cc1101id}_registers
       - lambda: id(${cc1101id}_manchester).publish_state(false);
 
