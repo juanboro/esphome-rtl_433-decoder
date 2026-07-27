@@ -38,8 +38,10 @@ binary_sensor:
       settle: 150ms
     on_press:
       - lambda: |-
-          id(read_${cc1101id}_registers)->execute(static_cast<int>(esphome::cc1101::Register::RSSI),static_cast<int>(esphome::cc1101::Register::RSSI));
-          id(${cc1101id}_sensor_rx_rssi)->update();
+          if (!${cc1101id}->is_ready()) {
+            id(read_${cc1101id}_registers)->execute(static_cast<int>(esphome::cc1101::Register::RSSI),static_cast<int>(esphome::cc1101::Register::RSSI));
+            id(${cc1101id}_sensor_rx_rssi)->update();
+          }
 
 script:
   - id: read_${cc1101id}_registers
