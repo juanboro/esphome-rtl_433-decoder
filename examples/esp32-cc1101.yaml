@@ -1,5 +1,5 @@
 substitutions:
-  cs:   "5"   # CC1101 pin 4 (green)
+  cs:   { number: 5, ignore_strapping_warning: true }   # CC1101 pin 4 (green)
   clk:  "18"  # CC1101 pin 5 (blue)
   mosi: "23"  # CC1101 pin 6 (purple)
   miso: "19"  # CC1101 pin 7 (grey)
@@ -23,15 +23,15 @@ spi:
 
 cc1101:
   id: ${cc1101id}
-  cs_pin: 5 # CC1101 pin 4
+  cs_pin: ${cs} # CC1101 pin 4
   frequency: ${init_frequency_mhz}MHz
   filter_length_ask_ook: 12dB
 
 remote_receiver:
   - id: ${cc1101id}_rf_receiver
-    idle: 10ms
+    idle: 10ms # Adjust as needed
     filter: 20us # Some RF sources have pretty high BW - adjust as needed
-    buffer_size: 2048 # This value is pretty large... default 10k is way too large
+    buffer_size: 4096 # This value is pretty large... default 10k is way too large
     pin:
       number: $rx
       allow_other_uses: true
@@ -67,6 +67,7 @@ remote_transmitter:
         - cc1101.begin_rx:
             id: ${cc1101id}
     carrier_duty_percent: 100%
+    non_blocking: true
 
 # it's a good idea to turn off the CC1101 receiver when doing OTA updates
 ota:
