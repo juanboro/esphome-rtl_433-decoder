@@ -9,11 +9,11 @@ substitutions:
   cc1101id: "mycc1101"  
   cc1101name: "CC1101"
   init_frequency_mhz: 433.92
-  cc1101controls: !include { file: cc1101-controls.yaml, vars: {cc1101id: $cc1101id } }
-  includecontrols: true
+  init_bw: 203
+  includecontrols: false
 
 packages:
-  includecontrols: ${ cc1101controls if includecontrols else {} }
+  cc1101controls: !include { file: cc1101-controls.yaml, vars: {cc1101id: $cc1101id , use_extendend_controls: $includecontrols } }
 
 spi:
   # these are the default VSPI pins to use on ESP32
@@ -26,6 +26,15 @@ cc1101:
   cs_pin: ${cs} # CC1101 pin 4
   frequency: ${init_frequency_mhz}MHz
   filter_length_ask_ook: 12dB
+
+esphome:
+  on_boot:
+    - priority: -101.0
+      then:
+        - script.execute:
+            # Set the initial bandwidth using custom script on boot (use recommended settings based on BW)
+            id: ${cc1101id}_set_bw
+            bw: ${init_bw}
 
 remote_receiver:
   - id: ${cc1101id}_rf_receiver
