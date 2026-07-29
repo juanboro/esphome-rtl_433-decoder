@@ -95,6 +95,32 @@ script:
           write_register: !lambda return static_cast<int>(esphome::cc1101::Register::FSCTRL0);
           value: !lambda return static_cast<uint8_t>(static_cast<int>((offset)/(esphome::cc1101::XTAL_FREQUENCY/(1<<14))));
 
+#BW	  FSCTRL1	  IF
+#58	  6	        152
+#100	6	        152
+#232	8	        203
+#325	8	        203
+#540	12	      305
+#812	14	      355
+#Per DN022 - for BW > than number in table - pick the IF for the next BW up (i.e: BW 125Khz = IF 203KHz)
+  - id: ${cc1101id}_set_bw
+    parameters:
+      bw: float
+    then:
+      - lambda: |-
+          if (!id(${cc1101id})->is_ready()) return;
+          id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::FSCTRL1),(bw<101) ? 0x06 :
+                                                                                                       (bw<326) ? 0x08 :
+                                                                                                       (bw<541) ? 0x0c :
+                                                                                                                  0x0e);
+          id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::FREND1),(bw>101) ? 0xB6 : 0x56);
+          id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::TEST2),(bw>325) ? 0x88 : 0x81);
+          id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::TEST1),(bw>325) ? 0x31 : 0x35);
+          id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::TEST0),0x09);
+          id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::FIFOTHR),(bw>325) ? 0x07 : 0x47);
+          id($cc1101id).set_filter_bandwidth(bw*1000);
+
+
 interval:
   - interval: 10s
     then:
@@ -170,7 +196,7 @@ number:
         return bandwidths_26MHz[table_index] * (esphome::cc1101::XTAL_FREQUENCY / 26.0e6f);
     set_action: 
       then:
-        - lambda: if (id(${cc1101id})->is_ready()) id($cc1101id).set_filter_bandwidth(x*1000);
+        - lambda: if (id(${cc1101id})->is_ready()) id(${cc1101id}_set_bw)->execute(x);
         - script.execute: read_all_${cc1101id}_registers
         - lambda: id(${cc1101id}_bw_num).update();
     min_value: 58.0
@@ -701,3 +727,28 @@ text_sensor:
     id: ${cc1101id}_sensor_reg_MDMCFG2
     name: "${cc1101name} _REG_MDMCFG2"
     lambda: return str_sprintf("0x%x",id(${cc1101id}_state).MDMCFG2);
+  - platform: template
+    id: ${cc1101id}_sensor_reg_FREND1
+    name: "${cc1101name} _REG_FREND1"
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).FREND1);
+  - platform: template
+    id: ${cc1101id}_sensor_reg_FREND0
+    name: "${cc1101name} _REG_FREND0"
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).FREND0);
+  - platform: template
+    id: ${cc1101id}_sensor_reg_TEST2
+    name: "${cc1101name} _REG_TEST2"
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).TEST2);
+  - platform: template
+    id: ${cc1101id}_sensor_reg_TEST1
+    name: "${cc1101name} _REG_TEST1"
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).TEST1);
+  - platform: template
+    id: ${cc1101id}_sensor_reg_TEST0
+    name: "${cc1101name} _REG_TEST0"
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).TEST0);
+  - platform: template
+    id: ${cc1101id}_sensor_reg_FIFOTHR
+    name: "${cc1101name} _REG_FIFOTHR"
+    lambda: return str_sprintf("0x%x",id(${cc1101id}_state).FIFOTHR);
+  
