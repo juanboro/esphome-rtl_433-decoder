@@ -55,7 +55,7 @@ script:
           id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::TEST0),0x09);
           id(write_${cc1101id}_register)->execute(static_cast<int>(esphome::cc1101::Register::FIFOTHR),(bw>325) ? 0x07 : 0x47);
           id($cc1101id).set_filter_bandwidth(bw*1000);
-
+          id($cc1101id).begin_rx();  // Force calibration cycle
 
 substitutions:
   use_extendend_controls: false
